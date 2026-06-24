@@ -1,0 +1,25 @@
+{
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/ninja-no-tests",
+    "--background-index",
+    "--clang-tidy",
+    "--header-insertion=iwyu",
+    "--completion-style=detailed",
+    "--pch-storage=memory"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.autocomplete": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "cmake.buildDirectory": "${workspaceFolder}/build/ninja-no-tests",
+  "cmake.generator": "Ninja",
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/thirdparty/build/**": true,
+    "**/thirdparty/installed/**": true
+  },
+  "search.exclude": {
+    "**/build/**": true,
+    "**/thirdparty/build/**": true,
+    "**/thirdparty/installed/**": true
+  }
+}

@@ -69,6 +69,18 @@ METRIC_DEFINE_counter(server, rpcs_queue_overflow,
                       "Number of RPCs dropped because the service queue was full.",
                       kudu::MetricLevel::kWarn);
 
+METRIC_DEFINE_gauge_uint64(server, rpcs_queue_length,
+                      "RPC Queue Length",
+                      kudu::MetricUnit::kRequests,
+                      "Number of RPCs waiting to be processed in actual queue.",
+                      kudu::MetricLevel::kInfo);
+
+METRIC_DEFINE_gauge_uint64(server, rpcs_idle_workers,
+                      "RPC Queue Length",
+                      kudu::MetricUnit::kThreads,
+                      "Number of idle workers available to handle incoming rpc requests.",
+                      kudu::MetricLevel::kInfo);
+
 namespace kudu {
 namespace rpc {
 
@@ -81,6 +93,13 @@ ServicePool::ServicePool(unique_ptr<ServiceIf> service,
     rpcs_timed_out_in_queue_(METRIC_rpcs_timed_out_in_queue.Instantiate(entity)),
     rpcs_queue_overflow_(METRIC_rpcs_queue_overflow.Instantiate(entity)),
     closing_(false) {
+      METRIC_rpcs_queue_length.InstantiateFunctionGauge(entity, [this](){
+        return this->service_queue_.estimated_queue_length();
+      })->AutoDetachToLastValue(&metric_detacher_);
+
+      METRIC_rpcs_idle_workers.InstantiateFunctionGauge(entity, [this](){
+        return this->service_queue_.estimated_idle_worker_count();
+      })->AutoDetachToLastValue(&metric_detacher_);
 }
 
 ServicePool::~ServicePool() {
@@ -176,7 +195,7 @@ Status ServicePool::QueueInboundCall(unique_ptr<InboundCall> call) {
     return Status::OK();
   }
 
-  if (PREDICT_FALSE(evicted != boost::none)) {
+  if (PREDICT_TRUE(evicted)) {
     RejectTooBusy(*evicted);
   }
 

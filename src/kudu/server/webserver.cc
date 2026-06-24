@@ -19,6 +19,9 @@
 
 #include <netinet/in.h>
 #include <openssl/crypto.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/evp.h>
+#endif
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -93,6 +96,14 @@ TAG_FLAG(webserver_x_frame_options, advanced);
 namespace kudu {
 
 namespace {
+
+bool IsFIPSModeEnabled() {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  return EVP_default_properties_is_fips_enabled(nullptr);
+#else
+  return FIPS_mode();
+#endif
+}
 
 // Last error message from the webserver.
 // TODO(todd) global strings are somewhat messy and lint is complaining
@@ -277,7 +288,7 @@ Status Webserver::Start() {
   }
 
   if (!opts_.password_file.empty()) {
-    if (FIPS_mode()) {
+    if (IsFIPSModeEnabled()) {
       return Status::IllegalState(
           "Webserver cannot be started with Digest authentication in FIPS approved mode");
     }

@@ -83,7 +83,9 @@ target_link_libraries(mini_hms
   krpc
   kudu_test_util
   kudu_util)
-add_dependencies(mini_hms hms_plugin_jar)
+if (NOT NO_TESTS)
+  add_dependencies(mini_hms hms_plugin_jar)
+endif()
 
 ##############################
 # hms tests

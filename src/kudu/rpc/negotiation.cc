@@ -170,8 +170,13 @@ static Status DoClientNegotiation(Connection* conn,
                                   unique_ptr<ErrorStatusPB>* rpc_error) {
   const auto* messenger = conn->reactor_thread()->reactor()->messenger();
   // Prefer secondary credentials (such as authn token) if permitted by policy.
-  const auto authn_token = (conn->credentials_policy() == CredentialsPolicy::PRIMARY_CREDENTIALS)
-      ? boost::none : messenger->authn_token();
+  boost::optional<security::SignedTokenPB> authn_token;
+  if (conn->credentials_policy() != CredentialsPolicy::PRIMARY_CREDENTIALS) {
+    const auto messenger_authn_token = messenger->authn_token();
+    if (messenger_authn_token) {
+      authn_token = *messenger_authn_token;
+    }
+  }
   ClientNegotiation client_negotiation(conn->release_socket(),
                                        &messenger->tls_context(),
                                        authn_token,

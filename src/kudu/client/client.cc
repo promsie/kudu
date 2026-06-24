@@ -740,7 +740,7 @@ void KuduClient::SetLatestObservedTimestamp(uint64_t ht_timestamp) {
 Status KuduClient::ExportAuthenticationCredentials(string* authn_creds) const {
   AuthenticationCredentialsPB pb;
 
-  boost::optional<security::SignedTokenPB> tok = data_->messenger_->authn_token();
+  const auto tok = data_->messenger_->authn_token();
   if (tok) {
     pb.mutable_authn_token()->CopyFrom(*tok);
   }

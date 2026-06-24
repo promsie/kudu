@@ -660,6 +660,9 @@ void Connection::ReadHandler(ev::io &watcher, int revents) {
     if (PREDICT_FALSE(!status.ok())) {
       if (status.posix_code() == ESHUTDOWN) {
         VLOG(1) << ToString() << " shut down by remote end.";
+      } else if (status.posix_code() == EMSGSIZE) {
+        // log for rpc frame length
+        LOG(ERROR) << ToString() << " recv error: " << status.ToString();
       } else {
         LOG(WARNING) << ToString() << " recv error: " << status.ToString();
       }

@@ -40,7 +40,7 @@ def output_up_to_date(path, id_hash):
   if not os.path.exists(path):
     return False
   f = open(path).read()
-  m = re.search("id_hash=(\w+)", f)
+  m = re.search(r"id_hash=(\w+)", f)
   if not m:
     return False
   return m.group(1) == id_hash

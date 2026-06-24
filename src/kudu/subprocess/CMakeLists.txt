@@ -58,7 +58,9 @@ target_link_libraries(kudu_subprocess
   tool_proto
   ${KUDU_BASE_LIBS}
 )
-add_dependencies(kudu_subprocess subprocess_jar)
+if (NOT NO_TESTS)
+  add_dependencies(kudu_subprocess subprocess_jar)
+endif()
 
 add_library(echo_subprocess
   echo_subprocess.cc

@@ -27,6 +27,7 @@
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/rpc/rpc_service.h"
 #include "kudu/rpc/service_queue.h"
+#include "kudu/util/metrics.h"
 #include "kudu/util/mutex.h"
 #include "kudu/util/status.h"
 
@@ -98,6 +99,7 @@ class ServicePool : public RpcService {
   scoped_refptr<Histogram> incoming_queue_time_;
   scoped_refptr<Counter> rpcs_timed_out_in_queue_;
   scoped_refptr<Counter> rpcs_queue_overflow_;
+  FunctionGaugeDetacher metric_detacher_;
 
   mutable Mutex shutdown_lock_;
   bool closing_;

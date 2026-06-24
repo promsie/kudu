@@ -1,0 +1,9 @@
+CompileFlags:
+  CompilationDatabase: build/ninja-no-tests
+
+Index:
+  Background: Build
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict

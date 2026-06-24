@@ -19,6 +19,9 @@
 
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/evp.h>
+#endif
 #include <openssl/rand.h> // IWYU pragma: keep
 
 #include <cerrno>
@@ -95,7 +98,11 @@ void ThreadIdCB(CRYPTO_THREADID* tid) {
 #endif
 
 void CheckFIPSMode() {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  auto fips_mode = EVP_default_properties_is_fips_enabled(nullptr);
+#else
   auto fips_mode = FIPS_mode();
+#endif
   // If the environment variable KUDU_REQUIRE_FIPS_MODE is set to "1", we
   // check if FIPS approved mode is enabled. If not, we crash the process.
   // As this is used in clients as well, we can't use gflags to set this.

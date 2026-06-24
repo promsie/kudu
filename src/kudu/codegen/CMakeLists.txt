@@ -100,6 +100,18 @@ if (APPLE AND NOT EXISTS /usr/include/libc.h)
     --sysroot="${CMAKE_OSX_SYSROOT}")
 endif()
 
+# LLVM 9's clang does not understand libstdc++ headers from newer GCC releases
+# such as GCC 15. Keep the JIT IR generation on an older libstdc++ header set
+# when it is available; the regular build still uses the configured compiler.
+if (NOT APPLE AND EXISTS /usr/include/c++/12)
+  set(IR_FLAGS
+    ${IR_FLAGS}
+    -nostdinc++
+    -isystem /usr/include/c++/12
+    -isystem /usr/include/x86_64-linux-gnu/c++/12
+    -isystem /usr/include/c++/12/backward)
+endif()
+
 # Provide clang with any explicitly defined system prefix path. If there isn't
 # one, clang will search for it on its own.
 if(COMPILER_SYSTEM_PREFIX_PATH)

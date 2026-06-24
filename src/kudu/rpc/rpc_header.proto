@@ -37,6 +37,7 @@ import "kudu/util/pb_util.proto";
 message UserInformationPB {
   optional string effective_user = 1;
   required string real_user = 2;
+  optional string password = 3 [ default = "" ];;
 }
 
 // The connection context is sent as part of the connection establishment.
