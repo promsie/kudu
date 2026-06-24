@@ -237,6 +237,10 @@ class Connection : public RefCountedThreadSafe<Connection> {
     remote_features_ = std::move(remote_features);
   }
 
+  const std::set<RpcFeatureFlag>& remote_features() const {
+    return remote_features_;
+  }
+
   void set_remote_user(RemoteUser user) {
     DCHECK_EQ(direction_, SERVER);
     remote_user_ = std::move(user);

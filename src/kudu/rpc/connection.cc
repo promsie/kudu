@@ -718,7 +718,12 @@ void Connection::HandleIncomingCall(unique_ptr<InboundTransfer> transfer) {
 void Connection::HandleCallResponse(unique_ptr<InboundTransfer> transfer) {
   DCHECK(reactor_thread_->IsCurrentThread());
   unique_ptr<CallResponse> resp(new CallResponse);
-  CHECK_OK(resp->ParseFrom(std::move(transfer)));
+  Status s = resp->ParseFrom(std::move(transfer));
+  if (PREDICT_FALSE(!s.ok())) {
+    LOG(WARNING) << ToString() << ": received bad call response: " << s.ToString();
+    reactor_thread_->DestroyConnection(this, s);
+    return;
+  }
 
   CallAwaitingResponse *car_ptr =
     EraseKeyReturnValuePtr(&awaiting_response_, resp->call_id());

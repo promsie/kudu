@@ -17,6 +17,7 @@
 
 #include "kudu/rpc/outbound_call.h"
 
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -39,6 +40,7 @@
 #include "kudu/gutil/walltime.h"
 #include "kudu/rpc/constants.h"
 #include "kudu/rpc/rpc_controller.h"
+#include "kudu/rpc/rpc_compression.h"
 #include "kudu/rpc/rpc_introspection.pb.h"
 #include "kudu/rpc/rpc_sidecar.h"
 #include "kudu/rpc/serialization.h"
@@ -62,6 +64,25 @@ DEFINE_int32(rpc_inject_cancellation_state, -1,
              "If this flag is not -1, it is the state in which a cancellation request "
              "will be injected. Should use values in OutboundCall::State only");
 TAG_FLAG(rpc_inject_cancellation_state, unsafe);
+
+DEFINE_int32(rpc_compression_threshold_bytes, 64 * 1024,
+             "RPC body or sidecar payloads at least this threshold will be "
+             "compressed independently. Set to a negative value to disable compression.");
+TAG_FLAG(rpc_compression_threshold_bytes, advanced);
+TAG_FLAG(rpc_compression_threshold_bytes, runtime);
+
+DEFINE_string(rpc_compression_codec, "lz4",
+              "Compression codec to use for RPC payload compression. Supported values "
+              "include 'lz4', 'snappy', and 'no_compression'.");
+TAG_FLAG(rpc_compression_codec, advanced);
+TAG_FLAG(rpc_compression_codec, runtime);
+
+DEFINE_int64(rpc_max_decompressed_message_size, -1,
+             "Maximum total size in bytes of an RPC payload after decompression. "
+             "If negative, follows --rpc_max_message_size when it is non-negative; "
+             "otherwise uses a conservative built-in limit.");
+TAG_FLAG(rpc_max_decompressed_message_size, advanced);
+TAG_FLAG(rpc_max_decompressed_message_size, runtime);
 
 using std::string;
 using std::unique_ptr;
@@ -144,19 +165,38 @@ void OutboundCall::SetRequestPayload(const Message& req,
   sidecars_ = move(sidecars);
   DCHECK_LE(sidecars_.size(), TransferLimits::kMaxSidecars);
 
-  // Compute total size of sidecar payload so that extra space can be reserved as part of
-  // the request body.
-  size_t message_size = req.ByteSizeLong();
-  CHECK_LE(message_size, std::numeric_limits<uint32_t>::max());
+  request_body_size_ = req.ByteSizeLong();
+  CHECK_LE(request_body_size_, std::numeric_limits<uint32_t>::max());
   sidecar_byte_size_ = 0;
   for (const unique_ptr<RpcSidecar>& car: sidecars_) {
-    header_.add_sidecar_offsets(sidecar_byte_size_ + message_size);
+    header_.add_sidecar_offsets(sidecar_byte_size_ + request_body_size_);
     size_t sidecar_bytes = car->TotalSize();
     DCHECK_LE(sidecar_byte_size_, TransferLimits::kMaxTotalSidecarBytes - sidecar_bytes);
     sidecar_byte_size_ += sidecar_bytes;
   }
 
   serialization::SerializeMessage(req, &request_buf_, sidecar_byte_size_, true);
+}
+
+std::optional<RpcCompressionInfo> OutboundCall::GetRequestCompressionFeature() const {
+  return GetConfiguredRpcCompressionInfo(request_body_size_, sidecars_);
+}
+
+void OutboundCall::CompressRequestPayload(const RpcCompressionInfo& comp_info) {
+  DCHECK_NE(sidecar_byte_size_, -1);
+  RpcCompressedPayload payload = CompressRpcPayloads(&header_,
+                                                     comp_info,
+                                                     "request",
+                                                     request_body_size_,
+                                                     &request_buf_,
+                                                     &sidecars_);
+  if (!payload.compressed) {
+    return;
+  }
+
+  required_rpc_features_.insert(comp_info.rpc_feature);
+  CHECK_LE(payload.sidecar_byte_size, INT_MAX);
+  sidecar_byte_size_ = static_cast<int32_t>(payload.sidecar_byte_size);
 }
 
 Status OutboundCall::status() const {
@@ -291,6 +331,14 @@ void OutboundCall::CallCallback() {
 
 void OutboundCall::SetResponse(unique_ptr<CallResponse> resp) {
   call_response_ = std::move(resp);
+  if (PREDICT_FALSE(call_response_->has_compression())) {
+    Status s = call_response_->DecompressIfNeeded();
+    if (PREDICT_FALSE(!s.ok())) {
+      SetFailed(Status::IOError("invalid RPC response", s.ToString()),
+                Phase::REMOTE_CALL);
+      return;
+    }
+  }
   Slice r(call_response_->serialized_response());
 
   if (call_response_->is_success()) {
@@ -524,6 +572,21 @@ Status CallResponse::ParseFrom(unique_ptr<InboundTransfer> transfer) {
 
   transfer_.swap(transfer);
   parsed_ = true;
+  return Status::OK();
+}
+
+Status CallResponse::DecompressIfNeeded() {
+  if (decompressed_ || !header_.has_compression()) {
+    return Status::OK();
+  }
+
+  RETURN_NOT_OK(DecompressRpcPayload(header_.compression(),
+                                     "response",
+                                     &serialized_response_,
+                                     &sidecar_slices_,
+                                     &decompressed_response_buf_,
+                                     &decompressed_sidecar_bufs_));
+  decompressed_ = true;
   return Status::OK();
 }
 

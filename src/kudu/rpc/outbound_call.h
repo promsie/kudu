@@ -16,8 +16,10 @@
 // under the License.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <set>
 #include <string>
@@ -32,6 +34,7 @@
 #include "kudu/rpc/constants.h"
 #include "kudu/rpc/remote_method.h"
 #include "kudu/rpc/response_callback.h"
+#include "kudu/rpc/rpc_compression.h"
 #include "kudu/rpc/rpc_header.pb.h"
 #include "kudu/rpc/rpc_sidecar.h"
 #include "kudu/rpc/transfer.h"
@@ -104,6 +107,15 @@ class OutboundCall {
   // Serialize the call for the wire. Requires that SetRequestPayload()
   // is called first. This is called from the Reactor thread.
   void SerializeTo(TransferPayload* slices);
+
+  // Compress the request payload with the provided compression codec.
+  // Precondition: GetRequestCompressionFeature() returned a valid RpcCompressionInfo
+  // and the remote peer supports the corresponding feature.
+  void CompressRequestPayload(const RpcCompressionInfo& comp_info);
+
+  // Return compression info when at least one request payload reaches the
+  // compression threshold and the configured codec is available.
+  std::optional<RpcCompressionInfo> GetRequestCompressionFeature() const;
 
   // Mark in the call that cancellation has been requested. If the call hasn't yet
   // started sending or has finished sending the RPC request but is waiting for a
@@ -261,6 +273,7 @@ class OutboundCall {
   // Buffers for storing segments of the wire-format request.
   faststring header_buf_;
   faststring request_buf_;
+  size_t request_body_size_ = 0;
 
   // Once a response has been received for this call, contains that response.
   // Otherwise NULL.
@@ -307,6 +320,11 @@ class CallResponse {
     return header_.call_id();
   }
 
+  bool has_compression() const {
+    DCHECK(parsed_);
+    return header_.has_compression();
+  }
+
   // Return the serialized response data. This is just the response "body" --
   // either a serialized ErrorStatusPB, or the serialized user response protobuf.
   const Slice &serialized_response() const {
@@ -318,8 +336,13 @@ class CallResponse {
   Status GetSidecar(int idx, Slice* sidecar) const;
 
  private:
+  friend class OutboundCall;
+
+  Status DecompressIfNeeded();
+
   // True once ParseFrom() is called.
   bool parsed_;
+  bool decompressed_ = false;
 
   // The parsed header.
   ResponseHeader header_;
@@ -334,6 +357,12 @@ class CallResponse {
   // The incoming transfer data - retained because serialized_response_
   // and sidecar_slices_ refer into its data.
   std::unique_ptr<InboundTransfer> transfer_;
+
+  // Buffers backing decompressed response data. These are populated by
+  // DecompressIfNeeded(), after which serialized_response_ and selected sidecar
+  // slices point here instead of transfer_.
+  faststring decompressed_response_buf_;
+  std::vector<faststring> decompressed_sidecar_bufs_;
 
   DISALLOW_COPY_AND_ASSIGN(CallResponse);
 };

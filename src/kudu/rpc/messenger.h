@@ -60,6 +60,7 @@ class InboundCall;
 class Messenger;
 class OutboundCall;
 class Reactor;
+class RemoteFeatureState;
 class RpczStore;
 
 struct AcceptorPoolInfo {
@@ -342,6 +343,10 @@ class Messenger {
   // and enqueue a task on that reactor to assign and send the call.
   void QueueOutboundCall(const std::shared_ptr<OutboundCall>& call);
 
+  bool RemoteSupportsFeature(const ConnectionId& conn_id,
+                             CredentialsPolicy cred_policy,
+                             RpcFeatureFlag feature);
+
   // Enqueue a call for processing on the server.
   void QueueInboundCall(std::unique_ptr<InboundCall> call);
 
@@ -428,6 +433,12 @@ class Messenger {
   explicit Messenger(const MessengerBuilder& bld);
 
   Reactor* RemoteToReactor(const Sockaddr& remote);
+  void CacheRemoteFeatures(const ConnectionId& conn_id,
+                           CredentialsPolicy cred_policy,
+                           const std::set<RpcFeatureFlag>& features);
+  void ClearRemoteFeatures(const ConnectionId& conn_id,
+                           CredentialsPolicy cred_policy,
+                           const std::set<RpcFeatureFlag>& features);
   Status Init();
   void RunTimeoutThread();
   void UpdateCurTime();
@@ -449,6 +460,15 @@ class Messenger {
 
   // Protects closing_, acceptor_pools_, rpc_services_.
   mutable percpu_rwlock lock_;
+
+  // Opportunistic snapshot of negotiated client connection features. The
+  // connection remains the source of truth; callers use this cache only to
+  // decide whether pre-send optimizations such as compression are worth trying.
+  mutable percpu_rwlock remote_features_lock_;
+  std::unordered_map<ConnectionId,
+                     std::shared_ptr<RemoteFeatureState>,
+                     ConnectionIdHash,
+                     ConnectionIdEqual> remote_features_;
 
   enum State {
     // The Messenger has been started; not all services may be registered yet.

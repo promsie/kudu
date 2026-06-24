@@ -96,6 +96,11 @@ class InboundCall {
     return serialized_request_;
   }
 
+  // Decompress request body and sidecars if the call header has compression
+  // metadata. This is CPU work and should be called by the service worker
+  // thread before service-specific request parsing.
+  Status DecompressIfNeeded();
+
   const RemoteMethod& remote_method() const {
     return remote_method_;
   }
@@ -270,6 +275,13 @@ class InboundCall {
   // Inbound sidecars from the request. The slices are views onto transfer_. There are as
   // many slices as header_.sidecar_offsets_size().
   SidecarSliceVector inbound_sidecar_slices_;
+
+  // Buffers backing decompressed request data. These are populated by
+  // DecompressIfNeeded(), after which serialized_request_ and selected inbound
+  // sidecar slices point here instead of transfer_.
+  faststring decompressed_request_buf_;
+  std::vector<faststring> decompressed_sidecar_bufs_;
+  bool decompressed_ = false;
 
   // The trace buffer.
   scoped_refptr<Trace> trace_;

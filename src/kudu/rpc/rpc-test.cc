@@ -77,10 +77,13 @@ METRIC_DECLARE_histogram(handler_latency_kudu_rpc_test_CalculatorService_Sleep);
 METRIC_DECLARE_histogram(rpc_incoming_queue_time);
 
 DECLARE_bool(rpc_reopen_outbound_connections);
+DECLARE_int32(rpc_compression_threshold_bytes);
 DECLARE_int32(rpc_negotiation_inject_delay_ms);
 DECLARE_int32(tcp_keepalive_probe_period_s);
 DECLARE_int32(tcp_keepalive_retry_period_s);
 DECLARE_int32(tcp_keepalive_retry_count);
+DECLARE_int64(rpc_max_decompressed_message_size);
+DECLARE_string(rpc_compression_codec);
 
 using std::tuple;
 using std::shared_ptr;
@@ -882,6 +885,82 @@ TEST_P(TestRpc, TestRpcSidecar) {
   DoTestOutgoingSidecarExpectOK(p, 0, 0);
   DoTestOutgoingSidecarExpectOK(p, 123, 456);
   DoTestOutgoingSidecarExpectOK(p, 3000 * 1024, 2000 * 1024);
+}
+
+TEST_P(TestRpc, TestCompressedRequestRejectedWhenDecompressedSizeTooLarge) {
+  const int32_t old_threshold = FLAGS_rpc_compression_threshold_bytes;
+  const int64_t old_max_decompressed = FLAGS_rpc_max_decompressed_message_size;
+  const string old_codec = FLAGS_rpc_compression_codec;
+  SCOPED_CLEANUP({
+    FLAGS_rpc_compression_threshold_bytes = old_threshold;
+    FLAGS_rpc_max_decompressed_message_size = old_max_decompressed;
+    FLAGS_rpc_compression_codec = old_codec;
+  });
+  FLAGS_rpc_compression_threshold_bytes = 1024;
+  FLAGS_rpc_max_decompressed_message_size = 4096;
+
+  Sockaddr server_addr = bind_addr();
+  ASSERT_OK(StartTestServer(&server_addr, enable_ssl()));
+
+  for (const string& codec : { string("lz4"), string("snappy") }) {
+    FLAGS_rpc_compression_codec = codec;
+    SCOPED_TRACE(Substitute("codec=$0", codec));
+
+    shared_ptr<Messenger> client_messenger;
+    ASSERT_OK(CreateMessenger("Client", &client_messenger, 1, enable_ssl()));
+    Proxy p(client_messenger, server_addr, kRemoteHostName,
+            GenericCalculatorService::static_service_name());
+
+    // Establish the connection and cache the peer's compression feature flags.
+    ASSERT_OK(DoTestSyncCall(p, GenericCalculatorService::kAddMethodName));
+
+    const vector<string> sidecars = { string(128 * 1024, 'r') };
+    Status s = DoTestOutgoingSidecar(p, sidecars);
+    ASSERT_TRUE(s.IsRemoteError()) << s.ToString();
+    ASSERT_STR_CONTAINS(s.ToString(), "maximum decompressed RPC message size");
+  }
+}
+
+TEST_P(TestRpc, TestCompressedResponseRejectedWhenDecompressedSizeTooLarge) {
+  const int32_t old_threshold = FLAGS_rpc_compression_threshold_bytes;
+  const int64_t old_max_decompressed = FLAGS_rpc_max_decompressed_message_size;
+  const int64_t old_max_message = FLAGS_rpc_max_message_size;
+  const string old_codec = FLAGS_rpc_compression_codec;
+  SCOPED_CLEANUP({
+    FLAGS_rpc_compression_threshold_bytes = old_threshold;
+    FLAGS_rpc_max_decompressed_message_size = old_max_decompressed;
+    FLAGS_rpc_max_message_size = old_max_message;
+    FLAGS_rpc_compression_codec = old_codec;
+  });
+  FLAGS_rpc_compression_threshold_bytes = 1024;
+  FLAGS_rpc_max_decompressed_message_size = 4096;
+  FLAGS_rpc_max_message_size = 1024 * 1024;
+
+  Sockaddr server_addr = bind_addr();
+  ASSERT_OK(StartTestServerWithGeneratedCode(&server_addr, enable_ssl()));
+
+  for (const string& codec : { string("lz4"), string("snappy") }) {
+    FLAGS_rpc_compression_codec = codec;
+    SCOPED_TRACE(Substitute("codec=$0", codec));
+
+    shared_ptr<Messenger> client_messenger;
+    ASSERT_OK(CreateMessenger("Client", &client_messenger, 1, enable_ssl()));
+    Proxy p(client_messenger, server_addr, kRemoteHostName,
+            CalculatorService::static_service_name());
+
+    // Establish the connection. Response compression uses features learned during
+    // connection negotiation; this also keeps the request below the compression threshold.
+    ASSERT_OK(DoTestSyncCall(p, "Add"));
+
+    TestInvalidResponseRequestPB req;
+    req.set_error_type(TestInvalidResponseRequestPB::RESPONSE_TOO_LARGE);
+    TestInvalidResponseResponsePB resp;
+    RpcController controller;
+    Status s = p.SyncRequest("TestInvalidResponse", req, &resp, &controller);
+    ASSERT_FALSE(s.ok()) << s.ToString();
+    ASSERT_STR_CONTAINS(s.ToString(), "invalid RPC response");
+    ASSERT_STR_CONTAINS(s.ToString(), "maximum decompressed RPC message size");
+  }
 }
 
 // Test sending the maximum number of sidecars, each of them being a single

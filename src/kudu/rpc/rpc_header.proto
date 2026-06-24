@@ -92,7 +92,19 @@ enum RpcFeatureFlag {
   // This is currently used for loopback connections only, so that compute
   // frameworks which schedule for locality don't pay encryption overhead.
   TLS_AUTHENTICATION_ONLY = 3;
+
+  // The RPC system supports Snappy compression.
+  RPC_COMPRESSION_SNAPPY = 4;
+
+  // The RPC system supports LZ4 compression.
+  RPC_COMPRESSION_LZ4 = 5;
 };
+
+enum RpcCompressionCodec {
+  NO_RPC_COMPRESSION = 0;
+  RPC_COMPRESSION_CODEC_SNAPPY = 1;
+  RPC_COMPRESSION_CODEC_LZ4 = 2;
+}
 
 // An authentication type. This is modeled as a oneof in case any of these
 // authentication types, or any authentication types in the future, need to add
@@ -216,6 +228,28 @@ message RequestIdPB {
   required int64 attempt_no = 4;
 }
 
+message RpcSidecarCompressionMetaPB {
+  // The index of the corresponding sidecar.
+  required uint32 sidecar_index = 1;
+
+  // The size of the sidecar before compression.
+  required uint32 uncompressed_size = 2;
+}
+
+message RpcCompressionMetaPB {
+  // The compression algorithm used.
+  optional RpcCompressionCodec compression_codec = 1 [default = NO_RPC_COMPRESSION];
+
+  // The size of the main message body before compression. Set only when the
+  // body is actually compressed (not when only sidecars are compressed).
+  // Receiving side should use sidecar_offsets[0] to determine the boundary
+  // between body and sidecars on the wire, NOT this field.
+  optional uint32 uncompressed_body_size = 2;
+
+  // Per-sidecar metadata for compressed sidecars.
+  repeated RpcSidecarCompressionMetaPB compressed_sidecars = 3;
+}
+
 // The header for the RPC request frame.
 message RequestHeader {
   // A sequence number that uniquely identifies a call to a single remote server. This number is
@@ -264,6 +298,9 @@ message RequestHeader {
   // These offsets are counted AFTER the message header, i.e., offset 0
   // is the first byte after the bytes for this protobuf.
   repeated uint32 sidecar_offsets = 16;
+
+  // Compression metadata for the request body and sidecars.
+  optional RpcCompressionMetaPB compression = 17;
 }
 
 message ResponseHeader {
@@ -278,6 +315,9 @@ message ResponseHeader {
   // These offsets are counted AFTER the message header, i.e., offset 0
   // is the first byte after the bytes for this protobuf.
   repeated uint32 sidecar_offsets = 3;
+
+  // Compression metadata for the response body and sidecars.
+  optional RpcCompressionMetaPB compression = 4;
 }
 
 // Sent as response when is_error == true.

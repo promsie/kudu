@@ -17,6 +17,8 @@
 
 #include "kudu/rpc/messenger.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <functional>
 #include <mutex>
@@ -64,6 +66,112 @@ namespace kudu {
 namespace rpc {
 
 const int64_t MessengerBuilder::kRpcNegotiationTimeoutMs = 3000;
+
+class RemoteFeatureState {
+ public:
+  RemoteFeatureState();
+
+  bool Supports(CredentialsPolicy cred_policy, RpcFeatureFlag feature) const;
+
+  void CacheFeatures(CredentialsPolicy cred_policy,
+                     const std::set<RpcFeatureFlag>& features);
+  void ClearFeatures(CredentialsPolicy cred_policy,
+                     const std::set<RpcFeatureFlag>& features);
+  bool Empty() const;
+
+ private:
+  static constexpr size_t kFeatureFlagSlots = 32;
+
+  struct FeaturesByPolicy {
+    int active_connections = 0;
+    std::array<int, kFeatureFlagSlots> ref_counts = {};
+  };
+
+  static size_t FeatureIndex(RpcFeatureFlag feature);
+
+  FeaturesByPolicy* mutable_features(CredentialsPolicy cred_policy);
+  const FeaturesByPolicy& features(CredentialsPolicy cred_policy) const;
+
+  mutable simple_spinlock lock_;
+  FeaturesByPolicy any_credentials_;
+  FeaturesByPolicy primary_credentials_;
+};
+
+RemoteFeatureState::RemoteFeatureState() = default;
+
+size_t RemoteFeatureState::FeatureIndex(RpcFeatureFlag feature) {
+  return static_cast<size_t>(feature);
+}
+
+bool RemoteFeatureState::Supports(CredentialsPolicy cred_policy,
+                                  RpcFeatureFlag feature) const {
+  const size_t idx = FeatureIndex(feature);
+  if (idx >= kFeatureFlagSlots) {
+    DCHECK_LT(idx, kFeatureFlagSlots);
+    return false;
+  }
+  std::lock_guard<simple_spinlock> l(lock_);
+  const FeaturesByPolicy& entry = features(cred_policy);
+  return entry.active_connections > 0 && entry.ref_counts[idx] > 0;
+}
+
+void RemoteFeatureState::CacheFeatures(CredentialsPolicy cred_policy,
+                                       const std::set<RpcFeatureFlag>& features) {
+  std::lock_guard<simple_spinlock> l(lock_);
+  FeaturesByPolicy* entry = mutable_features(cred_policy);
+  ++entry->active_connections;
+  for (RpcFeatureFlag feature : features) {
+    const size_t idx = FeatureIndex(feature);
+    if (idx >= kFeatureFlagSlots) {
+      DCHECK_LT(idx, kFeatureFlagSlots);
+      continue;
+    }
+    ++entry->ref_counts[idx];
+  }
+}
+
+void RemoteFeatureState::ClearFeatures(CredentialsPolicy cred_policy,
+                                       const std::set<RpcFeatureFlag>& features) {
+  std::lock_guard<simple_spinlock> l(lock_);
+  FeaturesByPolicy* entry = mutable_features(cred_policy);
+  DCHECK_GT(entry->active_connections, 0);
+  if (entry->active_connections <= 0) {
+    return;
+  }
+  --entry->active_connections;
+  for (RpcFeatureFlag feature : features) {
+    const size_t idx = FeatureIndex(feature);
+    if (idx >= kFeatureFlagSlots) {
+      DCHECK_LT(idx, kFeatureFlagSlots);
+      continue;
+    }
+    DCHECK_GT(entry->ref_counts[idx], 0);
+    if (entry->ref_counts[idx] > 0) {
+      --entry->ref_counts[idx];
+    }
+  }
+  if (entry->active_connections == 0) {
+    std::fill(entry->ref_counts.begin(), entry->ref_counts.end(), 0);
+  }
+}
+
+bool RemoteFeatureState::Empty() const {
+  std::lock_guard<simple_spinlock> l(lock_);
+  return any_credentials_.active_connections == 0 &&
+      primary_credentials_.active_connections == 0;
+}
+
+RemoteFeatureState::FeaturesByPolicy* RemoteFeatureState::mutable_features(
+    CredentialsPolicy cred_policy) {
+  return cred_policy == CredentialsPolicy::PRIMARY_CREDENTIALS ?
+      &primary_credentials_ : &any_credentials_;
+}
+
+const RemoteFeatureState::FeaturesByPolicy& RemoteFeatureState::features(
+    CredentialsPolicy cred_policy) const {
+  return cred_policy == CredentialsPolicy::PRIMARY_CREDENTIALS ?
+      primary_credentials_ : any_credentials_;
+}
 
 MessengerBuilder::MessengerBuilder(string name)
     : name_(std::move(name)),
@@ -265,6 +373,43 @@ Status Messenger::UnregisterService(const string& service_name) {
 void Messenger::QueueOutboundCall(const shared_ptr<OutboundCall> &call) {
   Reactor *reactor = RemoteToReactor(call->conn_id().remote());
   reactor->QueueOutboundCall(call);
+}
+
+bool Messenger::RemoteSupportsFeature(
+    const ConnectionId& conn_id,
+    CredentialsPolicy cred_policy,
+    RpcFeatureFlag feature) {
+  shared_lock<rw_spinlock> l(remote_features_lock_.get_lock());
+  auto it = remote_features_.find(conn_id);
+  if (it == remote_features_.end()) {
+    return false;
+  }
+  return it->second->Supports(cred_policy, feature);
+}
+
+void Messenger::CacheRemoteFeatures(const ConnectionId& conn_id,
+                                    CredentialsPolicy cred_policy,
+                                    const std::set<RpcFeatureFlag>& features) {
+  std::lock_guard<percpu_rwlock> l(remote_features_lock_);
+  shared_ptr<RemoteFeatureState>& state = remote_features_[conn_id];
+  if (!state) {
+    state = std::make_shared<RemoteFeatureState>();
+  }
+  state->CacheFeatures(cred_policy, features);
+}
+
+void Messenger::ClearRemoteFeatures(const ConnectionId& conn_id,
+                                    CredentialsPolicy cred_policy,
+                                    const std::set<RpcFeatureFlag>& features) {
+  std::lock_guard<percpu_rwlock> l(remote_features_lock_);
+  auto it = remote_features_.find(conn_id);
+  if (it == remote_features_.end()) {
+    return;
+  }
+  it->second->ClearFeatures(cred_policy, features);
+  if (it->second->Empty()) {
+    remote_features_.erase(it);
+  }
 }
 
 void Messenger::QueueInboundCall(unique_ptr<InboundCall> call) {

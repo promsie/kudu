@@ -244,6 +244,16 @@ void ServicePool::RunThread() {
       continue;
     }
 
+    if (incoming->header().has_compression()) {
+      TRACE_TO(incoming->trace(), "Decompressing RPC payload");
+      Status s = incoming->DecompressIfNeeded();
+      if (PREDICT_FALSE(!s.ok())) {
+        incoming->RespondFailure(ErrorStatusPB::ERROR_INVALID_REQUEST, s);
+        ignore_result(incoming.release());
+        continue;
+      }
+    }
+
     TRACE_TO(incoming->trace(), "Handling call");
 
     // Release the InboundCall pointer -- when the call is responded to,

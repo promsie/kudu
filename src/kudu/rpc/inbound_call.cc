@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <ostream>
+#include <utility>
 
 #include <boost/container/vector.hpp>
 #include <glog/logging.h>
@@ -30,6 +32,8 @@
 #include "kudu/gutil/port.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/rpc/connection.h"
+#include "kudu/rpc/reactor.h"
+#include "kudu/rpc/rpc_compression.h"
 #include "kudu/rpc/rpc_introspection.pb.h"
 #include "kudu/rpc/rpc_sidecar.h"
 #include "kudu/rpc/rpcz_store.h"
@@ -57,6 +61,28 @@ using strings::Substitute;
 
 namespace kudu {
 namespace rpc {
+
+namespace {
+
+std::optional<RpcCompressionInfo> GetResponseCompressionInfo(
+    const Connection& conn,
+    size_t body_size,
+    const vector<unique_ptr<RpcSidecar>>& sidecars) {
+  if (conn.reactor_thread()->IsCurrentThread()) {
+    // Response compression can be CPU-heavy; don't run it on a reactor thread.
+    return std::nullopt;
+  }
+  auto comp_info = GetConfiguredRpcCompressionInfo(body_size, sidecars);
+  if (!comp_info.has_value()) {
+    return std::nullopt;
+  }
+  if (conn.remote_features().find(comp_info->rpc_feature) == conn.remote_features().end()) {
+    return std::nullopt;
+  }
+  return comp_info;
+}
+
+} // anonymous namespace
 
 static ArenaOptions MakeArenaOptions() {
   ArenaOptions opts;
@@ -110,6 +136,21 @@ Status InboundCall::ParseFrom(unique_ptr<InboundTransfer> transfer) {
 
   // Retain the buffer that we have a view into.
   transfer_.swap(transfer);
+  return Status::OK();
+}
+
+Status InboundCall::DecompressIfNeeded() {
+  if (decompressed_ || !header_.has_compression()) {
+    return Status::OK();
+  }
+
+  RETURN_NOT_OK(DecompressRpcPayload(header_.compression(),
+                                     "request",
+                                     &serialized_request_,
+                                     &inbound_sidecar_slices_,
+                                     &decompressed_request_buf_,
+                                     &decompressed_sidecar_bufs_));
+  decompressed_ = true;
   return Status::OK();
 }
 
@@ -202,6 +243,24 @@ void InboundCall::SerializeResponseBuffer(const MessageLite& response,
 
   serialization::SerializeMessage(response, &response_msg_buf_,
                                   sidecar_byte_size, true);
+
+  auto comp_info = GetResponseCompressionInfo(*conn_.get(),
+                                              protobuf_msg_size,
+                                              outbound_sidecars_);
+  if (comp_info.has_value()) {
+    RpcCompressedPayload payload = CompressRpcPayloads(&resp_hdr,
+                                                       *comp_info,
+                                                       "response",
+                                                       protobuf_msg_size,
+                                                       &response_msg_buf_,
+                                                       &outbound_sidecars_);
+    if (payload.compressed) {
+      CHECK_LE(payload.sidecar_byte_size, INT_MAX);
+      sidecar_byte_size = static_cast<int32_t>(payload.sidecar_byte_size);
+      outbound_sidecars_total_bytes_ = sidecar_byte_size;
+    }
+  }
+
   int64_t main_msg_size = sidecar_byte_size + response_msg_buf_.size();
   serialization::SerializeHeader(resp_hdr, main_msg_size,
                                  &response_hdr_buf_);

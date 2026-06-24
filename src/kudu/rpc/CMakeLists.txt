@@ -59,6 +59,7 @@ set(KRPC_SRCS
     request_tracker.cc
     result_tracker.cc
     rpc.cc
+    rpc_compression.cc
     rpc_context.cc
     rpc_controller.cc
     rpc_sidecar.cc
@@ -80,6 +81,7 @@ set(KRPC_LIBS
   gssapi_krb5
   gutil
   kudu_util
+  kudu_util_compression
   libev
   rpc_header_proto
   rpc_introspection_proto
@@ -131,6 +133,7 @@ ADD_KUDU_TEST(negotiation-test)
 ADD_KUDU_TEST(periodic-test)
 ADD_KUDU_TEST(reactor-test)
 ADD_KUDU_TEST(request_tracker-test)
+ADD_KUDU_TEST(rpc_compression-test)
 ADD_KUDU_TEST(rpc-bench RUN_SERIAL true)
 ADD_KUDU_TEST(rpc-test NUM_SHARDS 8)
 ADD_KUDU_TEST(rpc_stub-test)

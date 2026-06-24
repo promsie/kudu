@@ -162,6 +162,16 @@ Status RpcController::AddOutboundSidecar(unique_ptr<RpcSidecar> car, int* idx) {
 void RpcController::SetRequestParam(const google::protobuf::Message& req) {
   DCHECK(call_ != nullptr);
   call_->SetRequestPayload(req, std::move(outbound_sidecars_));
+  auto comp_info = call_->GetRequestCompressionFeature();
+  if (!comp_info.has_value()) {
+    return;
+  }
+  if (messenger_ != nullptr &&
+      messenger_->RemoteSupportsFeature(call_->conn_id(),
+                                        credentials_policy_,
+                                        comp_info->rpc_feature)) {
+    call_->CompressRequestPayload(*comp_info);
+  }
 }
 
 void RpcController::Cancel() {

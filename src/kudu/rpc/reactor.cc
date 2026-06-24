@@ -651,6 +651,11 @@ void ReactorThread::CompleteConnectionNegotiation(
   }
 
   conn->MarkNegotiationComplete();
+  if (conn->direction() == Connection::CLIENT) {
+    reactor_->messenger()->CacheRemoteFeatures(conn->outbound_connection_id(),
+                                               conn->credentials_policy(),
+                                               conn->remote_features());
+  }
   conn->EpollRegister(loop_);
 }
 
@@ -692,6 +697,9 @@ void ReactorThread::DestroyConnection(Connection* conn,
 
   // Unlink connection from lists.
   if (conn->direction() == Connection::CLIENT) {
+    reactor_->messenger()->ClearRemoteFeatures(conn->outbound_connection_id(),
+                                               conn->credentials_policy(),
+                                               conn->remote_features());
     const auto range = client_conns_.equal_range(conn->outbound_connection_id());
     CHECK(range.first != range.second) << "Couldn't find connection " << conn->ToString();
     // The client_conns_ container is a multi-map.
